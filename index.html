@@ -3590,6 +3590,7 @@
     <button class="nav-item" data-view="dashboard"><span class="nav-emoji">📊</span> Analytics Dashboard</button>
     <button class="nav-item" data-view="sales"><span class="nav-emoji">📈</span> Avg Daily Sales <span class="nav-count" id="nav-count-sales">0</span></button>
     <button class="nav-item" data-view="production"><span class="nav-emoji">🏭</span> Current Production <span class="nav-count" id="nav-count-prod">0</span></button>
+    <button class="nav-item" data-view="growthProjection"><span class="nav-emoji">🚀</span> Growth Projection</button>
     <button class="nav-item" data-view="productDetails"><span class="nav-emoji">🧴</span> Product Details <span class="nav-count" id="nav-count-pdet">0</span></button>
     <button class="nav-item" data-view="suppliers"><span class="nav-emoji">🤝</span> Suppliers <span class="nav-count" id="nav-count-sup">0</span></button>
     <button class="nav-item" data-view="documents"><span class="nav-emoji">📁</span> POs &amp; Invoices <span class="nav-count" id="nav-count-docs">0</span></button>
@@ -3848,7 +3849,7 @@ function dashFilter(term) {
       + '<td class="numeric"><input type="number" class="stock-edit" value="' + p.readyStock + '" min="0" data-sku="' + escapeAttr(p.sku) + '" data-product-name="' + escapeAttr(p.name) + '" onclick="this.select()"></td>'
       + '<td class="numeric">' + inProdCell + '</td>'
       + '<td class="numeric"><strong style="color:var(--ink)">' + p.adsN.toFixed(1) + '</strong></td>'
-      + '<td class="days-cell">' + renderDaysOfCoverBlock(p.daysImmediate, p.daysTotal, p.inProductionQty, p.soonestPromise, p.batches, p.adsN) + '<div class="days-bar"><div class="days-bar-fill" style="width:' + barPct + '%;background:' + barColor + ';"></div></div></td>'
+      + '<td class="days-cell">' + renderDaysOfCoverBlock(p.daysImmediate, p.daysTotal, p.inProductionQty, p.soonestPromise, p.batches, p.adsN, p.readyStock, p.stockAtDelivery, p.stockOnDeliveryDay) + '<div class="days-bar"><div class="days-bar-fill" style="width:' + barPct + '%;background:' + barColor + ';"></div></div></td>'
       + '<td><span class="status status-' + p.status + '">' + statusLabel + '</span></td>'
       + '<td>' + actionBtn + '</td>'
       + '</tr>';
@@ -3944,12 +3945,6 @@ function applyRemoteState(parsed) {
         }
       });
       // Don't delete po.actualProductionEndDate — leave it as harmless extra data
-    });
-  });
-  // Migration: ensure leadDaysType exists on all POs (default calendar)
-  ['inProduction','completedProduction'].forEach(key => {
-    (state[key] || []).forEach(po => {
-      if (!po.leadDaysType) po.leadDaysType = 'calendar';
     });
   });
   // Migration: drop __EMPTY phantom sales entries that snuck in from older
@@ -4191,6 +4186,12 @@ function renderDeliveryBreakdown(batches, ads, daysImmediate) {
   const todayMs = Date.now();
   let cumulativeQty = 0;
   const rows = sorted.map(g => {
+    // Stock remaining just before this delivery arrives
+    const daysToThisDelivery = g.date ? Math.max(0, (g.date - todayMs) / 86400000) : null;
+    const stockBeforeDelivery = (safeAds > 0 && daysToThisDelivery !== null)
+      ? Math.max(0, (+daysImmediate || 0) * safeAds - safeAds * daysToThisDelivery + cumulativeQty)
+      : null;
+    // Fallback: days of cover before this delivery (old behavior)
     const daysBefore = safeAds > 0
       ? (+daysImmediate || 0) + (cumulativeQty / safeAds)
       : Infinity;
@@ -4214,8 +4215,12 @@ function renderDeliveryBreakdown(batches, ads, daysImmediate) {
     // than the wait for it, there's a potential out-of-stock window.
     const warn = isFinite(daysBefore) && daysFromNow != null && daysFromNow > 0 && daysBefore < daysFromNow;
 
+    const stockLabel = stockBeforeDelivery !== null
+      ? `${fmtNum(Math.round(stockBeforeDelivery))} pcs left`
+      : fmtDays(daysBefore);
+
     return `<div class="doc-breakdown-row${warn ? ' dbr-warn' : ''}" title="${warn ? 'Possible stockout before this delivery — cover is shorter than the wait' : ''}">
-      🏭Before ${escapeHtml(dateLabel)} Delivery: <span class="dbr-days">${fmtDays(daysBefore)}</span>${rel ? ` · <span class="dbr-rel">${escapeHtml(rel)}</span>` : ''}
+      🏭 Before ${escapeHtml(dateLabel)}: <span class="dbr-days">${stockLabel}</span>${rel ? ` · <span class="dbr-rel">${escapeHtml(rel)}</span>` : ''}
     </div>`;
   }).join('');
 
@@ -4237,7 +4242,7 @@ function renderDeliveryBreakdown(batches, ads, daysImmediate) {
  *       OR a single "next delivery: [date]" remark.
  * Returns an HTML string. Intentionally compact so it works in a table cell.
  */
-function renderDaysOfCoverBlock(daysImmediate, daysTotal, inProductionQty, soonestPromise, batches, ads, stock) {
+function renderDaysOfCoverBlock(daysImmediate, daysTotal, inProductionQty, soonestPromise, batches, ads, stock, stockAtDelivery, stockOnDeliveryDay) {
   // Formula breakdown dropdown (hidden by default, click to expand)
   const formulaHtml = (stock != null && ads > 0) ? `
     <details class="doc-formula-details">
@@ -4255,17 +4260,37 @@ function renderDaysOfCoverBlock(daysImmediate, daysTotal, inProductionQty, soone
           <span class="doc-formula-label">= Days of Cover</span>
           <span class="doc-formula-val">${Math.floor(daysImmediate)}</span>
         </div>
-        ${inProductionQty > 0 ? `
+        ${inProductionQty > 0 && stockAtDelivery != null ? `
         <div class="doc-formula-row" style="margin-top:6px; padding-top:6px; border-top: 1px dashed var(--line);">
-          <span class="doc-formula-label">+ In Production</span>
+          <span class="doc-formula-label">Stock on delivery day</span>
+          <span class="doc-formula-val">${fmtNum(Math.round(stockAtDelivery))}</span>
+        </div>
+        <div class="doc-formula-row">
+          <span class="doc-formula-label">+ Incoming</span>
           <span class="doc-formula-val">${fmtNum(inProductionQty)}</span>
         </div>
         <div class="doc-formula-row">
+          <span class="doc-formula-label">= Total on delivery day</span>
+          <span class="doc-formula-val">${fmtNum(Math.round(stockOnDeliveryDay))}</span>
+        </div>
+        <div class="doc-formula-row doc-formula-divider">
           <span class="doc-formula-label">÷ Daily Sales</span>
           <span class="doc-formula-val">${ads.toFixed(1)}</span>
         </div>
         <div class="doc-formula-row doc-formula-result">
-          <span class="doc-formula-label">= Incl. Prod</span>
+          <span class="doc-formula-label">= Cover from delivery</span>
+          <span class="doc-formula-val">${Math.floor(daysTotal)}</span>
+        </div>` : inProductionQty > 0 ? `
+        <div class="doc-formula-row" style="margin-top:6px; padding-top:6px; border-top: 1px dashed var(--line);">
+          <span class="doc-formula-label">+ In Production</span>
+          <span class="doc-formula-val">${fmtNum(inProductionQty)}</span>
+        </div>
+        <div class="doc-formula-row doc-formula-divider">
+          <span class="doc-formula-label">÷ Daily Sales</span>
+          <span class="doc-formula-val">${ads.toFixed(1)}</span>
+        </div>
+        <div class="doc-formula-row doc-formula-result">
+          <span class="doc-formula-label">= Cover from delivery</span>
           <span class="doc-formula-val">${Math.floor(daysTotal)}</span>
         </div>` : ''}
       </div>
@@ -4279,11 +4304,16 @@ function renderDaysOfCoverBlock(daysImmediate, daysTotal, inProductionQty, soone
     ${formulaHtml}`;
   if (inProductionQty > 0) {
     const breakdown = renderDeliveryBreakdown(batches, ads, daysImmediate);
+    // Label: show "X left + Y incoming = Z on delivery day" if we have the data
+    const inclLabel = stockAtDelivery != null
+      ? `${fmtNum(Math.round(stockAtDelivery))} left + ${fmtNum(inProductionQty)} in = ${fmtNum(Math.round(stockOnDeliveryDay))}`
+      : null;
     html += `
       <div class="doc-line doc-line-prod">
-        <span class="doc-label">Incl. Prod:</span>
+        <span class="doc-label">On delivery day:</span>
         <span class="doc-value">${fmtDays(daysTotal)}</span>
-      </div>`;
+      </div>
+      ${inclLabel ? `<div class="doc-next-delivery" style="font-size:0.78em;color:var(--ink-mute);">${inclLabel} pcs</div>` : ''}`;
     if (breakdown) {
       html += breakdown;
     } else {
@@ -4293,8 +4323,6 @@ function renderDaysOfCoverBlock(daysImmediate, daysTotal, inProductionQty, soone
       const nextStr = nextDate ? fmtDateDisplay(nextDate) : null;
       if (nextStr) {
         const days = Math.round((nextDate - Date.now()) / 86400000);
-        // Only show the "next delivery" hint if the promise date hasn't passed yet —
-        // an overdue PO is presumably either fulfilled or being chased separately.
         if (days >= 0) {
           const rel = days === 0 ? 'today' : `in ${days}d`;
           html += `<div class="doc-next-delivery">next delivery: ${escapeHtml(nextStr)} · ${rel}</div>`;
@@ -4613,8 +4641,23 @@ function getProductRollup() {
     p.totalStock = p.readyStock + p.inProductionQty;
     // Days of cover & status now use the currently selected ADS window (adsN)
     p.daysImmediate = p.adsN > 0 ? p.readyStock / p.adsN : Infinity;
-    p.daysTotal     = p.adsN > 0 ? p.totalStock / p.adsN : Infinity;
     p.daysToArrival = p.soonestPromise ? Math.max(0, (p.soonestPromise - Date.now()) / 86400000) : null;
+    // Stock remaining on delivery day = readyStock - (ADS × daysToArrival), floored at 0
+    // Then add incoming production qty to get total on delivery day
+    // daysTotal = days of cover FROM delivery day onward (stock on delivery day / ADS)
+    if (p.adsN > 0 && p.inProductionQty > 0 && p.daysToArrival !== null) {
+      p.stockAtDelivery = Math.max(0, p.readyStock - p.adsN * p.daysToArrival);
+      p.stockOnDeliveryDay = p.stockAtDelivery + p.inProductionQty;
+      p.daysTotal = p.stockOnDeliveryDay / p.adsN;
+    } else if (p.adsN > 0) {
+      p.stockAtDelivery = null;
+      p.stockOnDeliveryDay = null;
+      p.daysTotal = p.inProductionQty > 0 ? p.totalStock / p.adsN : p.daysImmediate;
+    } else {
+      p.stockAtDelivery = null;
+      p.stockOnDeliveryDay = null;
+      p.daysTotal = Infinity;
+    }
     const reliefDays = p.daysToArrival !== null ? p.daysToArrival : p.leadDays;
 
     if (p.readyStock <= 0 && p.inProductionQty <= 0) p.status = 'out';
@@ -4708,6 +4751,7 @@ function render() {
   else if (currentView === 'productImprovement')  main.innerHTML = renderProductImprovement();
   else if (currentView === 'inventoryBS')         main.innerHTML = renderWarehouseInventory('bs');
   else if (currentView === 'inventoryDayOne')     main.innerHTML = renderWarehouseInventory('dayone');
+  else if (currentView === 'growthProjection')    main.innerHTML = renderGrowthProjection();
   else if (currentView === 'productDetails')      main.innerHTML = renderProductDetails();
   // Update reorder banner above sub-nav (only visible on warehouse views)
   const onWarehouse = currentView === 'inventoryBS' || currentView === 'inventoryDayOne';
@@ -4883,8 +4927,18 @@ function getCombinedWarehouseReorder() {
     const stock = e.bsQty + e.dayoneQty;
     const totalStock = stock + base.inProductionQty;
     const daysImmediate = base.adsN > 0 ? stock / base.adsN : Infinity;
-    const daysTotal     = base.adsN > 0 ? totalStock / base.adsN : Infinity;
     const daysToArrival = base.soonestPromise ? Math.max(0, (base.soonestPromise - Date.now()) / 86400000) : null;
+    // Stock remaining on delivery day + incoming = total on delivery day
+    let stockAtDelivery = null, stockOnDeliveryDay = null, daysTotal;
+    if (base.adsN > 0 && base.inProductionQty > 0 && daysToArrival !== null) {
+      stockAtDelivery   = Math.max(0, stock - base.adsN * daysToArrival);
+      stockOnDeliveryDay = stockAtDelivery + base.inProductionQty;
+      daysTotal = stockOnDeliveryDay / base.adsN;
+    } else if (base.adsN > 0) {
+      daysTotal = base.inProductionQty > 0 ? totalStock / base.adsN : daysImmediate;
+    } else {
+      daysTotal = Infinity;
+    }
     const reliefDays = daysToArrival !== null ? daysToArrival : base.leadDays;
 
     let status;
@@ -6179,7 +6233,7 @@ function renderDashboard() {
         <td class="numeric" data-label="In Production">${inProdCell}</td>
         <td class="numeric" data-label="ADS ${adsDays}d"><strong style="color:var(--ink)">${p.adsN.toFixed(1)}</strong></td>
         <td class="days-cell" data-label="Days of Cover" data-sort-value="${isFinite(p.daysImmediate) ? p.daysImmediate : 99999}">
-          ${renderDaysOfCoverBlock(p.daysImmediate, p.daysTotal, p.inProductionQty, p.soonestPromise, p.batches, p.adsN)}
+          ${renderDaysOfCoverBlock(p.daysImmediate, p.daysTotal, p.inProductionQty, p.soonestPromise, p.batches, p.adsN, p.readyStock, p.stockAtDelivery, p.stockOnDeliveryDay)}
           <div class="days-bar"><div class="days-bar-fill" style="width:${barPct}%; background:${barColor};"></div></div>
         </td>
         <td data-label="Status" data-sort-value="${statusOrder[p.status]}"><span class="status status-${p.status}">${statusLabel}</span></td>
@@ -6565,6 +6619,295 @@ function renderSpikeAlert() {
     </details>`;
 }
 
+    </details>`;\n}\n\n// ─────────────────────────────────────────────────────────────────────────────
+// GROWTH PROJECTION TAB
+// ─────────────────────────────────────────────────────────────────────────────
+let gpAdsDays = 3; // global ADS window for this tab
+
+function gpBuildProducts(multiplier, adsDays) {
+  // Build product list from sales + warehouse + inProduction
+  const bySkuSales = new Map();
+  state.sales.forEach(s => {
+    const vals = s.values || [];
+    let ads;
+    if (adsDays === 3)  ads = vals.length >= 3  ? (vals[0]+vals[1]+vals[2])/3           : vals.reduce((a,b)=>a+b,0)/Math.max(vals.length,1);
+    else if (adsDays === 5)  ads = vals.length >= 5  ? vals.slice(0,5).reduce((a,b)=>a+b,0)/5  : vals.reduce((a,b)=>a+b,0)/Math.max(vals.length,1);
+    else if (adsDays === 7)  ads = vals.length >= 7  ? vals.slice(0,7).reduce((a,b)=>a+b,0)/7  : vals.reduce((a,b)=>a+b,0)/Math.max(vals.length,1);
+    else if (adsDays === 14) ads = vals.length >= 14 ? vals.slice(0,14).reduce((a,b)=>a+b,0)/14: vals.reduce((a,b)=>a+b,0)/Math.max(vals.length,1);
+    else ads = vals.reduce((a,b)=>a+b,0)/Math.max(vals.length,1);
+    bySkuSales.set(s.sku, { name: s.name, sku: s.sku, adsBase: Math.round(ads*10)/10 });
+  });
+
+  // Stock from warehouse
+  const stockBySku = new Map();
+  Object.values(state.warehouseInventory || {}).forEach(wh => {
+    Object.values(wh || {}).forEach(section => {
+      if (!Array.isArray(section)) return;
+      section.forEach(item => {
+        const q = Math.max(0, item.quantity || 0);
+        stockBySku.set(item.sku, (stockBySku.get(item.sku)||0) + q);
+      });
+    });
+  });
+
+  // Deliveries from inProduction
+  const deliveriesBySku = new Map();
+  state.inProduction.forEach(po => {
+    (po.lineItems||[]).forEach(li => {
+      const arrival = getBatchArrival(po, li);
+      if (!arrival) return;
+      const sku = li.sku;
+      if (!deliveriesBySku.has(sku)) deliveriesBySku.set(sku, []);
+      deliveriesBySku.get(sku).push({ date: arrival, qty: +li.quantity||0, po: po.poNumber });
+    });
+  });
+
+  // Build rows
+  const rows = [];
+  bySkuSales.forEach((s, sku) => {
+    const stock     = stockBySku.get(sku) || 0;
+    const adsScaled = Math.round(s.adsBase * multiplier * 10) / 10;
+    const deliveries = (deliveriesBySku.get(sku) || []).sort((a,b)=>a.date-b.date);
+    const daysImmediate = adsScaled > 0 ? stock / adsScaled : Infinity;
+    const now = Date.now();
+
+    // Build remarks: per-delivery "X left + Y in = Z on delivery day"
+    let remarks = '';
+    if (deliveries.length > 0) {
+      const parts = deliveries.map(dv => {
+        const daysTo = Math.max(0, (dv.date - now) / 86400000);
+        const stockAtDv = Math.max(0, stock - adsScaled * daysTo);
+        const total = stockAtDv + dv.qty;
+        const dcAfter = adsScaled > 0 ? Math.round(total / adsScaled) : '∞';
+        const rel = Math.round(daysTo);
+        return `${dv.date.toLocaleDateString('en-GB',{day:'2-digit',month:'short'})} (${dv.po}): ${fmtNum(Math.round(stockAtDv))} left + ${fmtNum(dv.qty)} in = ${fmtNum(Math.round(total))} pcs → ${dcAfter}d cover`;
+      });
+      remarks = parts.join('\n');
+    }
+
+    rows.push({
+      sku, name: s.name, stock,
+      adsBase: s.adsBase, adsScaled,
+      daysImmediate, deliveries, remarks
+    });
+  });
+
+  return rows.sort((a,b) => {
+    if (!isFinite(a.daysImmediate) && !isFinite(b.daysImmediate)) return 0;
+    if (!isFinite(a.daysImmediate)) return 1;
+    if (!isFinite(b.daysImmediate)) return -1;
+    return a.daysImmediate - b.daysImmediate;
+  });
+}
+
+function gpTableHtml(rows, scenarioLabel, multiplier, searchVal) {
+  const filtered = searchVal
+    ? rows.filter(r => r.name.toLowerCase().includes(searchVal.toLowerCase()) || r.sku.toLowerCase().includes(searchVal.toLowerCase()))
+    : rows;
+
+  const rowsHtml = filtered.map(r => {
+    const daysStr  = isFinite(r.daysImmediate) ? Math.round(r.daysImmediate).toString() : '∞';
+    const daysNum  = isFinite(r.daysImmediate) ? r.daysImmediate : 9999;
+    const daysColor = daysNum < 14 ? 'var(--red)' : daysNum < 30 ? 'var(--amber, #E67E22)' : 'inherit';
+
+    const remarksHtml = r.remarks
+      ? r.remarks.split('\n').map(line =>
+          `<div class="gp-remark-line">• ${escapeHtml(line)}</div>`
+        ).join('')
+      : '<span style="color:var(--ink-mute)">—</span>';
+
+    return `<tr>
+      <td class="gp-name-cell"><div class="gp-product-name">${escapeHtml(r.name)}</div><div class="gp-sku-tag">${escapeHtml(r.sku)}</div></td>
+      <td class="numeric">${fmtNum(r.stock)}</td>
+      <td class="numeric">${r.adsBase.toFixed(1)}</td>
+      <td class="numeric gp-scaled-ads">${r.adsScaled.toFixed(1)}</td>
+      <td class="numeric" style="color:${daysColor};font-weight:${daysNum<30?'700':'400'}">${daysStr}</td>
+      <td class="gp-remarks">${remarksHtml}</td>
+    </tr>`;
+  }).join('');
+
+  return `<div class="gp-scenario-block">
+    <div class="gp-scenario-header" style="background:${
+      multiplier===1.25?'#1A5276':multiplier===1.5?'#145A32':'#7B241C'
+    }">
+      <span class="gp-scenario-title">${escapeHtml(scenarioLabel)}</span>
+      <span class="gp-scenario-sub">ADS × ${multiplier} — ${filtered.length} SKUs</span>
+    </div>
+    <table class="gp-table">
+      <thead>
+        <tr>
+          <th>Product Name</th>
+          <th class="numeric">Current Inventory</th>
+          <th class="numeric">Base ADS (${gpAdsDays}d)</th>
+          <th class="numeric gp-scaled-ads">Projected ADS (×${multiplier})</th>
+          <th class="numeric">Days of Stock</th>
+          <th>Remarks — Upcoming Deliveries</th>
+        </tr>
+      </thead>
+      <tbody>${rowsHtml || '<tr><td colspan="6" style="text-align:center;color:var(--ink-mute);padding:20px">No products found</td></tr>'}</tbody>
+    </table>
+  </div>`;
+}
+
+function renderGrowthProjection() {
+  const searchVal = (document.getElementById('gp-search-input') || {}).value || '';
+  const scenarios = [
+    { label: 'Scenario: 125% of Current Sales (×1.25)', multiplier: 1.25 },
+    { label: 'Scenario: 150% of Current Sales (×1.50)', multiplier: 1.50 },
+    { label: 'Scenario: 200% of Current Sales (×2.00)', multiplier: 2.00 },
+  ];
+
+  const tablesHtml = scenarios.map(sc => {
+    const rows = gpBuildProducts(sc.multiplier, gpAdsDays);
+    return gpTableHtml(rows, sc.label, sc.multiplier, searchVal);
+  }).join('');
+
+  return `
+  <style>
+    .gp-toolbar { display:flex; align-items:center; gap:12px; flex-wrap:wrap; padding:16px 0 12px; }
+    .gp-search { flex:1; min-width:200px; max-width:320px; padding:8px 12px; border:1px solid var(--line); border-radius:6px; font-size:13px; background:var(--white); color:var(--ink); }
+    .gp-search:focus { outline:none; border-color:var(--lavender-deep); }
+    .gp-ads-toggle { display:flex; gap:0; border:1px solid var(--line); border-radius:6px; overflow:hidden; }
+    .gp-ads-btn { padding:7px 13px; font-size:12px; font-weight:600; background:var(--white); color:var(--ink-mute); border:none; cursor:pointer; transition:all .15s; }
+    .gp-ads-btn:hover { background:var(--lavender-faint); color:var(--ink); }
+    .gp-ads-btn.active { background:var(--lavender-deep); color:var(--white); }
+    .gp-export-btn { margin-left:auto; padding:8px 18px; background:var(--lavender-deep); color:var(--white); border:none; border-radius:6px; font-size:13px; font-weight:600; cursor:pointer; display:flex; align-items:center; gap:6px; }
+    .gp-export-btn:hover { opacity:.88; }
+    .gp-scenario-block { margin-bottom:28px; border:1px solid var(--line); border-radius:8px; overflow:hidden; }
+    .gp-scenario-header { display:flex; align-items:center; justify-content:space-between; padding:10px 16px; }
+    .gp-scenario-title { color:#fff; font-weight:700; font-size:14px; }
+    .gp-scenario-sub { color:rgba(255,255,255,.75); font-size:12px; }
+    .gp-table { width:100%; border-collapse:collapse; font-size:13px; }
+    .gp-table thead th { background:var(--lavender-faint); padding:9px 12px; text-align:left; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.04em; color:var(--ink-mute); border-bottom:1px solid var(--line); white-space:nowrap; }
+    .gp-table thead th.numeric { text-align:right; }
+    .gp-table tbody tr:nth-child(even) { background:var(--surface); }
+    .gp-table tbody tr:hover { background:var(--lavender-faint); }
+    .gp-table td { padding:8px 12px; border-bottom:1px solid var(--line); vertical-align:top; }
+    .gp-table td.numeric { text-align:right; font-variant-numeric:tabular-nums; }
+    .gp-scaled-ads { background:rgba(100,120,255,.05); }
+    .gp-name-cell { min-width:180px; }
+    .gp-product-name { font-weight:600; color:var(--ink); }
+    .gp-sku-tag { font-size:11px; color:var(--ink-mute); margin-top:2px; }
+    .gp-remarks { font-size:12px; color:var(--ink-mute); min-width:320px; }
+    .gp-remark-line { margin-bottom:3px; line-height:1.4; }
+    .gp-remark-line:last-child { margin-bottom:0; }
+    .gp-section-title { font-size:18px; font-weight:700; color:var(--ink); margin:0 0 4px; }
+    .gp-section-sub { font-size:13px; color:var(--ink-mute); margin:0 0 0; }
+  </style>
+  <div style="padding:0 0 32px;">
+    <div class="gp-toolbar">
+      <div>
+        <div class="gp-section-title">🚀 Growth Projection</div>
+        <div class="gp-section-sub">Simulates days of stock cover at higher sales velocity. Based on current inventory &amp; upcoming deliveries.</div>
+      </div>
+    </div>
+    <div class="gp-toolbar">
+      <input class="gp-search" id="gp-search-input" type="text" placeholder="🔍 Search product or SKU…"
+        value="${escapeAttr(searchVal)}"
+        oninput="gpOnSearch(this.value)">
+      <div class="gp-ads-toggle">
+        <button class="gp-ads-btn${gpAdsDays===3?' active':''}" onclick="gpSetAds(3)">3d</button>
+        <button class="gp-ads-btn${gpAdsDays===5?' active':''}" onclick="gpSetAds(5)">5d</button>
+        <button class="gp-ads-btn${gpAdsDays===7?' active':''}" onclick="gpSetAds(7)">7d</button>
+        <button class="gp-ads-btn${gpAdsDays===14?' active':''}" onclick="gpSetAds(14)">14d</button>
+      </div>
+      <button class="gp-export-btn" onclick="gpExportExcel()">📥 Export to Excel</button>
+    </div>
+    ${tablesHtml}
+  </div>`;
+}
+
+function gpOnSearch(val) {
+  const main = document.getElementById('main');
+  if (!main) return;
+  // Re-render just the tables in place without losing scroll
+  const scenarios = [
+    { label: 'Scenario: 125% of Current Sales (×1.25)', multiplier: 1.25 },
+    { label: 'Scenario: 150% of Current Sales (×1.50)', multiplier: 1.50 },
+    { label: 'Scenario: 200% of Current Sales (×2.00)', multiplier: 2.00 },
+  ];
+  const blocks = main.querySelectorAll('.gp-scenario-block');
+  scenarios.forEach((sc, i) => {
+    if (!blocks[i]) return;
+    const rows = gpBuildProducts(sc.multiplier, gpAdsDays);
+    const tmp = document.createElement('div');
+    tmp.innerHTML = gpTableHtml(rows, sc.label, sc.multiplier, val);
+    blocks[i].replaceWith(tmp.firstElementChild);
+  });
+}
+
+function gpSetAds(days) {
+  gpAdsDays = days;
+  render();
+}
+
+function gpExportExcel() {
+  // Build a multi-sheet workbook using SheetJS (available in the browser)
+  // We'll create a CSV-based download as fallback, or use a proper XLSX blob
+  const scenarios = [
+    { label: '125% Sales', multiplier: 1.25 },
+    { label: '150% Sales', multiplier: 1.50 },
+    { label: '200% Sales', multiplier: 2.00 },
+  ];
+
+  // Build rows for all 3 scenarios
+  const allRows = [];
+  allRows.push(['Growth Projection Report', '', '', '', '', '', '']);
+  allRows.push([`Generated: ${new Date().toLocaleDateString('en-GB')}`, `ADS Window: ${gpAdsDays}d`, '', '', '', '', '']);
+  allRows.push([]);
+
+  scenarios.forEach(sc => {
+    const rows = gpBuildProducts(sc.multiplier, gpAdsDays);
+    allRows.push([`Scenario: ${sc.label} (ADS × ${sc.multiplier})`, '', '', '', '', '', '']);
+    allRows.push(['Product Name', 'SKU', 'Current Inventory', `Base ADS (${gpAdsDays}d)`, `Projected ADS (×${sc.multiplier})`, 'Days of Stock', 'Remarks — Upcoming Deliveries']);
+    rows.forEach(r => {
+      const daysStr = isFinite(r.daysImmediate) ? Math.round(r.daysImmediate) : '∞';
+      const remarksFlat = r.remarks.replace(/\n/g, ' | ');
+      allRows.push([r.name, r.sku, r.stock, r.adsBase, r.adsScaled, daysStr, remarksFlat]);
+    });
+    allRows.push([]);
+  });
+
+  // Convert to CSV
+  const csv = allRows.map(row =>
+    row.map(cell => {
+      const s = String(cell ?? '').replace(/"/g, '""');
+      return s.includes(',') || s.includes('\n') || s.includes('"') ? `"${s}"` : s;
+    }).join(',')
+  ).join('\r\n');
+
+  // Try SheetJS for proper xlsx
+  try {
+    const XLSX = window.XLSX || (typeof require !== 'undefined' ? require('xlsx') : null);
+    if (XLSX) {
+      const wb = XLSX.utils.book_new();
+      scenarios.forEach(sc => {
+        const rows2 = gpBuildProducts(sc.multiplier, gpAdsDays);
+        const wsData = [
+          ['Product Name', 'SKU', 'Current Inventory', `Base ADS (${gpAdsDays}d)`, `Projected ADS (×${sc.multiplier})`, 'Days of Stock', 'Remarks'],
+          ...rows2.map(r => [r.name, r.sku, r.stock, r.adsBase, r.adsScaled,
+            isFinite(r.daysImmediate) ? Math.round(r.daysImmediate) : '∞',
+            r.remarks.replace(/\n/g, ' | ')])
+        ];
+        const ws = XLSX.utils.aoa_to_sheet(wsData);
+        // Column widths
+        ws['!cols'] = [{wch:35},{wch:20},{wch:18},{wch:16},{wch:18},{wch:14},{wch:70}];
+        XLSX.utils.book_append_sheet(wb, ws, sc.label);
+      });
+      XLSX.writeFile(wb, `Facelove_Growth_Projection_${gpAdsDays}d_${new Date().toISOString().slice(0,10)}.xlsx`);
+      return;
+    }
+  } catch(e) { /* fall through to CSV */ }
+
+  // Fallback: download as CSV
+  const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = `Facelove_Growth_Projection_${gpAdsDays}d_${new Date().toISOString().slice(0,10)}.csv`;
+  document.body.appendChild(a); a.click();
+  document.body.removeChild(a); URL.revokeObjectURL(url);
+}
+
 function renderSales() {
   const has = state.sales.length > 0;
   const viewDays = state.salesViewDays || 3;
@@ -6684,9 +7027,17 @@ function renderSales() {
         docCell = `<td class="doc-cell" data-label="Days of Cover" title="No sales yet — cover is effectively unlimited"><strong>∞</strong></td>`;
       } else {
         const daysImmediate = stock / ads;
-        const daysTotal     = (stock + prodQty) / ads;
+        const daysToArrival = prodEntry.soonestPromise ? Math.max(0, (prodEntry.soonestPromise - Date.now()) / 86400000) : null;
+        let stockAtDelivery = null, stockOnDeliveryDay = null, daysTotal;
+        if (prodQty > 0 && daysToArrival !== null) {
+          stockAtDelivery    = Math.max(0, stock - ads * daysToArrival);
+          stockOnDeliveryDay = stockAtDelivery + prodQty;
+          daysTotal = stockOnDeliveryDay / ads;
+        } else {
+          daysTotal = prodQty > 0 ? (stock + prodQty) / ads : daysImmediate;
+        }
         const isLow = daysImmediate < REORDER_DAYS;
-        docCell = `<td class="doc-cell ${isLow ? 'doc-low' : ''}" data-label="Days of Cover" title="${fmtNum(stock)} units in stock${prodQty > 0 ? ' · ' + fmtNum(prodQty) + ' in production' : ''} · ${ads.toFixed(1)} ADS">${renderDaysOfCoverBlock(daysImmediate, daysTotal, prodQty, prodEntry.soonestPromise, prodEntry.batches, ads, stock)}</td>`;
+        docCell = `<td class="doc-cell ${isLow ? 'doc-low' : ''}" data-label="Days of Cover" title="${fmtNum(stock)} units in stock${prodQty > 0 ? ' · ' + fmtNum(prodQty) + ' in production' : ''} · ${ads.toFixed(1)} ADS">${renderDaysOfCoverBlock(daysImmediate, daysTotal, prodQty, prodEntry.soonestPromise, prodEntry.batches, ads, stock, stockAtDelivery, stockOnDeliveryDay)}</td>`;
       }
       return `
         <tr>
@@ -7252,20 +7603,6 @@ function renderPOCard(po, mode) {
     <div class="info-grid">
       ${f('Production Start',      'productionStart',         'date', po.productionStart, fmtDateDisplay)}
       ${f('Production End',        'promiseDate',             'date', po.promiseDate,     fmtDateDisplay)}
-      <div class="info-row">
-        <div class="info-label">Lead Time Type</div>
-        <div class="info-value">
-          ${editing
-            ? `<label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12px;">
-                <input type="checkbox" data-po-id="${escapeAttr(po.id)}" data-po-field="leadDaysType" data-po-field-type="checkbox-workingdays"
-                  ${(po.leadDaysType || 'calendar') === 'working' ? 'checked' : ''}
-                  style="width:14px;height:14px;cursor:pointer;">
-                Working days <span style="color:var(--ink-mute);font-size:11px;">(skips Sat &amp; Sun)</span>
-              </label>`
-            : `<span style="font-size:12px;">${(po.leadDaysType || 'calendar') === 'working' ? '✓ Working days (Mon–Fri)' : 'Calendar days'}</span>`
-          }
-        </div>
-      </div>
       ${f('Currency',              'currency',                'currency', currency, v => `${v} (${currencySymbol(v)})`)}
       ${f('Remarks',               'remarks',                 'text', po.remarks, null, true)}
     </div>`;
@@ -7306,10 +7643,8 @@ function renderLineItemsTable(po, editing, isCompleted) {
     if (po.productionStart && leadTime > 0) {
       const start = new Date(po.productionStart);
       if (!isNaN(start)) {
-        const est = (po.leadDaysType || 'calendar') === 'working'
-          ? addWorkingDays(start, leadTime)
-          : new Date(start.getTime());
-        if ((po.leadDaysType || 'calendar') !== 'working') est.setDate(est.getDate() + leadTime);
+        const est = new Date(start);
+        est.setDate(est.getDate() + leadTime);
         estCompletion = est.toISOString().slice(0, 10);
         estCompletionDisplay = escapeHtml(fmtDateDisplay(estCompletion));
       }
@@ -7636,13 +7971,8 @@ function attachInlineHandlers() {
       const field = el.dataset.poField;
       const po = findPOAnywhere(id);
       if (!po) return;
-      if (el.dataset.poFieldType === 'checkbox-workingdays') {
-        po[field] = el.checked ? 'working' : 'calendar';
-      } else {
-        po[field] = el.value;
-      }
+      po[field] = el.value;
       saveState();
-      render();
     });
   });
 
@@ -7765,17 +8095,6 @@ function findPOAnywhere(id) {
   return state.inProduction.find(p => p.id === id) || state.completedProduction.find(p => p.id === id);
 }
 
-function addWorkingDays(startDate, days) {
-  const result = new Date(startDate);
-  let added = 0;
-  while (added < days) {
-    result.setDate(result.getDate() + 1);
-    const dow = result.getDay();
-    if (dow !== 0 && dow !== 6) added++;
-  }
-  return result;
-}
-
 function addPO(target = 'inProduction') {
   const newPO = {
     id: uid('po_'),
@@ -7783,7 +8102,6 @@ function addPO(target = 'inProduction') {
     productionStart: '', promiseDate: '', actualProductionEndDate: '',
     productionStatus: 'ontrack',
     currency: 'USD', remarks: '',
-    leadDaysType: 'calendar',
     lineItems: []
   };
   state[target].unshift(newPO);
@@ -8689,10 +9007,8 @@ function exportProductionData() {
       if (po.productionStart && leadTime > 0) {
         const start = new Date(po.productionStart);
         if (!isNaN(start)) {
-          const est = (po.leadDaysType || 'calendar') === 'working'
-            ? addWorkingDays(start, leadTime)
-            : new Date(start.getTime());
-          if ((po.leadDaysType || 'calendar') !== 'working') est.setDate(est.getDate() + leadTime);
+          const est = new Date(start);
+          est.setDate(est.getDate() + leadTime);
           estCompletion = est.toISOString().slice(0, 10);
         }
       }
