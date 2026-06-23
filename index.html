@@ -6700,213 +6700,238 @@ function gpBuildProducts(multiplier, adsDays) {
   });
 }
 
-function gpTableHtml(rows, scenarioLabel, multiplier, searchVal) {
-  const filtered = searchVal
-    ? rows.filter(r => r.name.toLowerCase().includes(searchVal.toLowerCase()) || r.sku.toLowerCase().includes(searchVal.toLowerCase()))
-    : rows;
+let gpActiveTab = 0;
 
-  const rowsHtml = filtered.map(r => {
-    const daysStr  = isFinite(r.daysImmediate) ? Math.round(r.daysImmediate).toString() : '∞';
-    const daysNum  = isFinite(r.daysImmediate) ? r.daysImmediate : 9999;
-    const daysColor = daysNum < 14 ? 'var(--red)' : daysNum < 30 ? 'var(--amber, #E67E22)' : 'inherit';
-
-    const remarksHtml = r.remarks
-      ? r.remarks.split('\n').map(line =>
-          `<div class="gp-remark-line">• ${escapeHtml(line)}</div>`
-        ).join('')
-      : '<span style="color:var(--ink-mute)">—</span>';
-
-    return `<tr>
-      <td class="gp-name-cell"><div class="gp-product-name">${escapeHtml(r.name)}</div><div class="gp-sku-tag">${escapeHtml(r.sku)}</div></td>
-      <td class="numeric">${fmtNum(r.stock)}</td>
-      <td class="numeric">${r.adsBase.toFixed(1)}</td>
-      <td class="numeric gp-scaled-ads">${r.adsScaled.toFixed(1)}</td>
-      <td class="numeric" style="color:${daysColor};font-weight:${daysNum<30?'700':'400'}">${daysStr}</td>
-      <td class="gp-remarks">${remarksHtml}</td>
-    </tr>`;
-  }).join('');
-
-  return `<div class="gp-scenario-block">
-    <div class="gp-scenario-header" style="background:${
-      multiplier===1.25?'#1A5276':multiplier===1.5?'#145A32':'#7B241C'
-    }">
-      <span class="gp-scenario-title">${escapeHtml(scenarioLabel)}</span>
-      <span class="gp-scenario-sub">ADS × ${multiplier} — ${filtered.length} SKUs</span>
-    </div>
-    <table class="gp-table">
-      <thead>
-        <tr>
-          <th>Product Name</th>
-          <th class="numeric">Current Inventory</th>
-          <th class="numeric">Base ADS (${gpAdsDays}d)</th>
-          <th class="numeric gp-scaled-ads">Projected ADS (×${multiplier})</th>
-          <th class="numeric">Days of Stock</th>
-          <th>Remarks — Upcoming Deliveries</th>
-        </tr>
-      </thead>
-      <tbody>${rowsHtml || '<tr><td colspan="6" style="text-align:center;color:var(--ink-mute);padding:20px">No products found</td></tr>'}</tbody>
-    </table>
-  </div>`;
-}
+const GP_SCENARIOS = [
+  { label: '125% of Current Sales', short: '×1.25', multiplier: 1.25, color: '#1A5276' },
+  { label: '150% of Current Sales', short: '×1.50', multiplier: 1.50, color: '#145A32' },
+  { label: '200% of Current Sales', short: '×2.00', multiplier: 2.00, color: '#7B241C' },
+];
 
 function renderGrowthProjection() {
   const searchVal = (document.getElementById('gp-search-input') || {}).value || '';
-  const scenarios = [
-    { label: 'Scenario: 125% of Current Sales (×1.25)', multiplier: 1.25 },
-    { label: 'Scenario: 150% of Current Sales (×1.50)', multiplier: 1.50 },
-    { label: 'Scenario: 200% of Current Sales (×2.00)', multiplier: 2.00 },
-  ];
-
-  const tablesHtml = scenarios.map(sc => {
-    const rows = gpBuildProducts(sc.multiplier, gpAdsDays);
-    return gpTableHtml(rows, sc.label, sc.multiplier, searchVal);
+  const sc = GP_SCENARIOS[gpActiveTab];
+  const rows = gpBuildProducts(sc.multiplier, gpAdsDays);
+  const tableHtml = gpTableHtml(rows, sc, searchVal);
+  const tabsHtml = GP_SCENARIOS.map((s,i) => {
+    const r = gpBuildProducts(s.multiplier, gpAdsDays);
+    const low = r.filter(x => isFinite(x.daysImmediate) && x.daysImmediate < 14).length;
+    const isActive = i === gpActiveTab;
+    return '<button class="gp-tab' + (isActive ? ' active' : '') + '"'
+      + ' style="' + (isActive ? 'background:' + s.color + ';border-color:' + s.color + ';color:#fff;' : '') + '"'
+      + ' onclick="gpSetTab(' + i + ')">'
+      + escapeHtml(s.label)
+      + (low > 0 ? '<span class="gp-tab-badge">⚠️ ' + low + ' low</span>' : '')
+      + '</button>';
   }).join('');
 
-  return `
-  <style>
-    .gp-toolbar { display:flex; align-items:center; gap:12px; flex-wrap:wrap; padding:16px 0 12px; }
-    .gp-search { flex:1; min-width:200px; max-width:320px; padding:8px 12px; border:1px solid var(--line); border-radius:6px; font-size:13px; background:var(--white); color:var(--ink); }
-    .gp-search:focus { outline:none; border-color:var(--lavender-deep); }
-    .gp-ads-toggle { display:flex; gap:0; border:1px solid var(--line); border-radius:6px; overflow:hidden; }
-    .gp-ads-btn { padding:7px 13px; font-size:12px; font-weight:600; background:var(--white); color:var(--ink-mute); border:none; cursor:pointer; transition:all .15s; }
-    .gp-ads-btn:hover { background:var(--lavender-faint); color:var(--ink); }
-    .gp-ads-btn.active { background:var(--lavender-deep); color:var(--white); }
-    .gp-export-btn { margin-left:auto; padding:8px 18px; background:var(--lavender-deep); color:var(--white); border:none; border-radius:6px; font-size:13px; font-weight:600; cursor:pointer; display:flex; align-items:center; gap:6px; }
-    .gp-export-btn:hover { opacity:.88; }
-    .gp-scenario-block { margin-bottom:28px; border:1px solid var(--line); border-radius:8px; overflow:hidden; }
-    .gp-scenario-header { display:flex; align-items:center; justify-content:space-between; padding:10px 16px; }
-    .gp-scenario-title { color:#fff; font-weight:700; font-size:14px; }
-    .gp-scenario-sub { color:rgba(255,255,255,.75); font-size:12px; }
-    .gp-table { width:100%; border-collapse:collapse; font-size:13px; }
-    .gp-table thead th { background:var(--lavender-faint); padding:9px 12px; text-align:left; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.04em; color:var(--ink-mute); border-bottom:1px solid var(--line); white-space:nowrap; }
-    .gp-table thead th.numeric { text-align:right; }
-    .gp-table tbody tr:nth-child(even) { background:var(--surface); }
-    .gp-table tbody tr:hover { background:var(--lavender-faint); }
-    .gp-table td { padding:8px 12px; border-bottom:1px solid var(--line); vertical-align:top; }
-    .gp-table td.numeric { text-align:right; font-variant-numeric:tabular-nums; }
-    .gp-scaled-ads { background:rgba(100,120,255,.05); }
-    .gp-name-cell { min-width:180px; }
-    .gp-product-name { font-weight:600; color:var(--ink); }
-    .gp-sku-tag { font-size:11px; color:var(--ink-mute); margin-top:2px; }
-    .gp-remarks { font-size:12px; color:var(--ink-mute); min-width:320px; }
-    .gp-remark-line { margin-bottom:3px; line-height:1.4; }
-    .gp-remark-line:last-child { margin-bottom:0; }
-    .gp-section-title { font-size:18px; font-weight:700; color:var(--ink); margin:0 0 4px; }
-    .gp-section-sub { font-size:13px; color:var(--ink-mute); margin:0 0 0; }
-  </style>
-  <div style="padding:0 0 32px;">
-    <div class="gp-toolbar">
-      <div>
-        <div class="gp-section-title">🚀 Growth Projection</div>
-        <div class="gp-section-sub">Simulates days of stock cover at higher sales velocity. Based on current inventory &amp; upcoming deliveries.</div>
-      </div>
-    </div>
-    <div class="gp-toolbar">
-      <input class="gp-search" id="gp-search-input" type="text" placeholder="🔍 Search product or SKU…"
-        value="${escapeAttr(searchVal)}"
-        oninput="gpOnSearch(this.value)">
-      <div class="gp-ads-toggle">
-        <button class="gp-ads-btn${gpAdsDays===3?' active':''}" onclick="gpSetAds(3)">3d</button>
-        <button class="gp-ads-btn${gpAdsDays===5?' active':''}" onclick="gpSetAds(5)">5d</button>
-        <button class="gp-ads-btn${gpAdsDays===7?' active':''}" onclick="gpSetAds(7)">7d</button>
-        <button class="gp-ads-btn${gpAdsDays===14?' active':''}" onclick="gpSetAds(14)">14d</button>
-      </div>
-      <button class="gp-export-btn" onclick="gpExportExcel()">📥 Export to Excel</button>
-    </div>
-    ${tablesHtml}
-  </div>`;
+  return '<style>'
+    + '.gp-toolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:14px 0 10px}'
+    + '.gp-search{flex:1;min-width:180px;max-width:300px;padding:8px 12px;border:1px solid var(--line);border-radius:6px;font-size:13px;background:var(--white);color:var(--ink)}'
+    + '.gp-search:focus{outline:none;border-color:var(--lavender-deep)}'
+    + '.gp-ads-toggle{display:flex;border:1px solid var(--line);border-radius:6px;overflow:hidden}'
+    + '.gp-ads-btn{padding:7px 12px;font-size:12px;font-weight:600;background:var(--white);color:var(--ink-mute);border:none;cursor:pointer;transition:all .15s}'
+    + '.gp-ads-btn:hover{background:var(--lavender-faint);color:var(--ink)}'
+    + '.gp-ads-btn.active{background:var(--lavender-deep);color:var(--white)}'
+    + '.gp-export-btn{margin-left:auto;padding:8px 16px;background:var(--lavender-deep);color:var(--white);border:none;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer}'
+    + '.gp-export-btn:hover{opacity:.88}'
+    + '.gp-tabs{display:flex;gap:6px;margin-bottom:0;flex-wrap:wrap}'
+    + '.gp-tab{padding:9px 18px;border-radius:8px 8px 0 0;font-size:13px;font-weight:600;cursor:pointer;border:1px solid var(--line);border-bottom:none;background:var(--surface);color:var(--ink-mute);transition:all .15s}'
+    + '.gp-tab:hover{background:var(--lavender-faint);color:var(--ink)}'
+    + '.gp-tab-badge{font-size:11px;margin-left:5px;background:rgba(192,57,43,.15);color:#C0392B;padding:2px 6px;border-radius:10px}'
+    + '.gp-table-wrap{border:1px solid var(--line);border-radius:0 8px 8px 8px;overflow:hidden;margin-bottom:32px}'
+    + '.gp-table-header{display:flex;align-items:center;justify-content:space-between;padding:10px 16px}'
+    + '.gp-table-header-title{color:#fff;font-weight:700;font-size:14px}'
+    + '.gp-table-header-sub{color:rgba(255,255,255,.75);font-size:12px}'
+    + '.gp-table{width:100%;border-collapse:collapse;font-size:13px}'
+    + '.gp-table thead th{background:var(--lavender-faint);padding:9px 12px;text-align:left;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--ink-mute);border-bottom:1px solid var(--line);white-space:nowrap}'
+    + '.gp-table thead th.numeric{text-align:right}'
+    + '.gp-table tbody tr:nth-child(even){background:var(--surface)}'
+    + '.gp-table tbody tr:hover{background:var(--lavender-faint)}'
+    + '.gp-table td{padding:8px 12px;border-bottom:1px solid var(--line);vertical-align:top}'
+    + '.gp-table td.numeric{text-align:right;font-variant-numeric:tabular-nums}'
+    + '.gp-scaled-ads{background:rgba(100,120,255,.05)}'
+    + '.gp-name-cell{min-width:180px}'
+    + '.gp-product-name{font-weight:600;color:var(--ink)}'
+    + '.gp-sku-tag{font-size:11px;color:var(--ink-mute);margin-top:2px}'
+    + '.gp-remarks{font-size:12px;color:var(--ink-mute);min-width:280px}'
+    + '.gp-remark-line{margin-bottom:3px;line-height:1.4}'
+    + '.gp-section-title{font-size:18px;font-weight:700;color:var(--ink);margin:0 0 3px}'
+    + '.gp-section-sub{font-size:13px;color:var(--ink-mute)}'
+    + '.gp-modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:1000;display:flex;align-items:center;justify-content:center}'
+    + '.gp-modal{background:var(--white);border-radius:12px;width:520px;max-width:95vw;max-height:85vh;display:flex;flex-direction:column;box-shadow:0 8px 32px rgba(0,0,0,.18)}'
+    + '.gp-modal-head{display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid var(--line)}'
+    + '.gp-modal-title{font-size:16px;font-weight:700;color:var(--ink)}'
+    + '.gp-modal-close{background:none;border:none;font-size:22px;cursor:pointer;color:var(--ink-mute);line-height:1;padding:0 4px}'
+    + '.gp-modal-body{padding:16px 20px;overflow-y:auto;flex:1}'
+    + '.gp-modal-section{margin-bottom:16px}'
+    + '.gp-modal-section-label{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--ink-mute);margin-bottom:8px;display:flex;justify-content:space-between;align-items:center}'
+    + '.gp-scenario-check{display:flex;align-items:center;gap:8px;padding:7px 10px;border-radius:6px;cursor:pointer;user-select:none}'
+    + '.gp-scenario-check:hover{background:var(--lavender-faint)}'
+    + '.gp-scenario-check input{width:15px;height:15px;cursor:pointer}'
+    + '.gp-product-list{max-height:260px;overflow-y:auto;border:1px solid var(--line);border-radius:6px}'
+    + '.gp-product-check{display:flex;align-items:center;gap:8px;padding:7px 10px;border-bottom:1px solid var(--line);cursor:pointer;user-select:none}'
+    + '.gp-product-check:last-child{border-bottom:none}'
+    + '.gp-product-check:hover{background:var(--lavender-faint)}'
+    + '.gp-product-check input{width:14px;height:14px;cursor:pointer;flex-shrink:0}'
+    + '.gp-product-check-name{font-size:13px;color:var(--ink);flex:1}'
+    + '.gp-product-check-sku{font-size:11px;color:var(--ink-mute)}'
+    + '.gp-modal-search{width:100%;padding:7px 10px;border:1px solid var(--line);border-radius:6px;font-size:13px;margin-bottom:8px;box-sizing:border-box;background:var(--white);color:var(--ink)}'
+    + '.gp-modal-footer{padding:14px 20px;border-top:1px solid var(--line);display:flex;gap:10px;justify-content:flex-end;align-items:center}'
+    + '.gp-modal-select-all{font-size:12px;color:var(--lavender-deep);cursor:pointer;border:none;background:none;padding:0;font-weight:600}'
+    + '.gp-confirm-btn{padding:9px 22px;background:var(--lavender-deep);color:#fff;border:none;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer}'
+    + '.gp-confirm-btn:hover{opacity:.88}'
+    + '.gp-cancel-btn{padding:9px 16px;background:var(--surface);color:var(--ink);border:1px solid var(--line);border-radius:6px;font-size:13px;cursor:pointer}'
+    + '</style>'
+    + '<div style="padding:0 0 32px;">'
+    + '<div class="gp-toolbar"><div>'
+    + '<div class="gp-section-title">🚀 Growth Projection</div>'
+    + '<div class="gp-section-sub">Days of stock cover at higher sales velocity — based on current inventory &amp; upcoming deliveries.</div>'
+    + '</div></div>'
+    + '<div class="gp-toolbar">'
+    + '<input class="gp-search" id="gp-search-input" type="text" placeholder="🔍 Search product or SKU…" value="' + escapeAttr(searchVal) + '" oninput="gpOnSearch(this.value)">'
+    + '<div class="gp-ads-toggle">'
+    + '<button class="gp-ads-btn' + (gpAdsDays===3?' active':'') + '" onclick="gpSetAds(3)">3d</button>'
+    + '<button class="gp-ads-btn' + (gpAdsDays===5?' active':'') + '" onclick="gpSetAds(5)">5d</button>'
+    + '<button class="gp-ads-btn' + (gpAdsDays===7?' active':'') + '" onclick="gpSetAds(7)">7d</button>'
+    + '<button class="gp-ads-btn' + (gpAdsDays===14?' active':'') + '" onclick="gpSetAds(14)">14d</button>'
+    + '</div>'
+    + '<button class="gp-export-btn" onclick="gpOpenExportModal()">📥 Export to Excel</button>'
+    + '</div>'
+    + '<div class="gp-tabs">' + tabsHtml + '</div>'
+    + '<div class="gp-table-wrap">'
+    + '<div class="gp-table-header" style="background:' + sc.color + '">'
+    + '<span class="gp-table-header-title">Scenario: ' + escapeHtml(sc.label) + '</span>'
+    + '<span class="gp-table-header-sub">ADS ' + escapeHtml(sc.short) + ' — ' + rows.length + ' products</span>'
+    + '</div>'
+    + tableHtml
+    + '</div></div>';
 }
+
+function gpTableHtml(rows, sc, searchVal) {
+  const filtered = searchVal
+    ? rows.filter(r => r.name.toLowerCase().includes(searchVal.toLowerCase()) || r.sku.toLowerCase().includes(searchVal.toLowerCase()))
+    : rows;
+  if (!filtered.length) return '<div style="text-align:center;padding:32px;color:var(--ink-mute)">No products found</div>';
+  const rowsHtml = filtered.map(r => {
+    const days = isFinite(r.daysImmediate) ? Math.round(r.daysImmediate) : null;
+    const daysStr = days === null ? '∞' : days.toString();
+    const daysColor = days !== null && days < 14 ? 'var(--red)' : days !== null && days < 30 ? '#E67E22' : 'inherit';
+    const daysWeight = days !== null && days < 30 ? '700' : '400';
+    const remarksHtml = r.remarks
+      ? r.remarks.split('\n').map(line => '<div class="gp-remark-line">• ' + escapeHtml(line) + '</div>').join('')
+      : '<span style="color:var(--ink-mute)">—</span>';
+    return '<tr>'
+      + '<td class="gp-name-cell"><div class="gp-product-name">' + escapeHtml(r.name) + '</div><div class="gp-sku-tag">' + escapeHtml(r.sku) + '</div></td>'
+      + '<td class="numeric">' + fmtNum(r.stock) + '</td>'
+      + '<td class="numeric">' + r.adsBase.toFixed(1) + '</td>'
+      + '<td class="numeric gp-scaled-ads">' + r.adsScaled.toFixed(1) + '</td>'
+      + '<td class="numeric" style="color:' + daysColor + ';font-weight:' + daysWeight + '">' + daysStr + '</td>'
+      + '<td class="gp-remarks">' + remarksHtml + '</td>'
+      + '</tr>';
+  }).join('');
+  return '<table class="gp-table"><thead><tr>'
+    + '<th>Product Name</th>'
+    + '<th class="numeric">Current Inventory</th>'
+    + '<th class="numeric">Base ADS (' + gpAdsDays + 'd)</th>'
+    + '<th class="numeric gp-scaled-ads">Projected ADS (' + escapeHtml(sc.short) + ')</th>'
+    + '<th class="numeric">Days of Stock</th>'
+    + '<th>Remarks — Upcoming Deliveries</th>'
+    + '</tr></thead><tbody>' + rowsHtml + '</tbody></table>';
+}
+
+function gpSetTab(i) { gpActiveTab = i; render(); }
 
 function gpOnSearch(val) {
-  const main = document.getElementById('main');
-  if (!main) return;
-  // Re-render just the tables in place without losing scroll
-  const scenarios = [
-    { label: 'Scenario: 125% of Current Sales (×1.25)', multiplier: 1.25 },
-    { label: 'Scenario: 150% of Current Sales (×1.50)', multiplier: 1.50 },
-    { label: 'Scenario: 200% of Current Sales (×2.00)', multiplier: 2.00 },
-  ];
-  const blocks = main.querySelectorAll('.gp-scenario-block');
-  scenarios.forEach((sc, i) => {
-    if (!blocks[i]) return;
-    const rows = gpBuildProducts(sc.multiplier, gpAdsDays);
-    const tmp = document.createElement('div');
-    tmp.innerHTML = gpTableHtml(rows, sc.label, sc.multiplier, val);
-    blocks[i].replaceWith(tmp.firstElementChild);
+  const wrap = document.querySelector('.gp-table-wrap');
+  if (!wrap) return;
+  const sc = GP_SCENARIOS[gpActiveTab];
+  const rows = gpBuildProducts(sc.multiplier, gpAdsDays);
+  const tbl = wrap.querySelector('.gp-table, div[style*="text-align:center"]');
+  if (tbl) { const tmp = document.createElement('div'); tmp.innerHTML = gpTableHtml(rows, sc, val); tbl.replaceWith(tmp.firstElementChild || tmp); }
+}
+
+function gpSetAds(days) { gpAdsDays = days; render(); }
+
+function gpOpenExportModal() {
+  const allRows = gpBuildProducts(1, gpAdsDays);
+  const productList = allRows.map(r =>
+    '<label class="gp-product-check">'
+    + '<input type="checkbox" class="gp-export-product-check" value="' + escapeAttr(r.sku) + '" checked>'
+    + '<span class="gp-product-check-name">' + escapeHtml(r.name) + '</span>'
+    + '<span class="gp-product-check-sku">' + escapeHtml(r.sku) + '</span>'
+    + '</label>'
+  ).join('');
+  const scenarioChecks = GP_SCENARIOS.map((s,i) =>
+    '<label class="gp-scenario-check">'
+    + '<input type="checkbox" class="gp-export-scenario-check" value="' + i + '" checked>'
+    + '<span style="font-size:13px;font-weight:600;color:' + s.color + '">' + escapeHtml(s.label) + '</span>'
+    + '</label>'
+  ).join('');
+  const modal = document.createElement('div');
+  modal.className = 'gp-modal-overlay';
+  modal.id = 'gp-export-modal';
+  modal.innerHTML = '<div class="gp-modal" onclick="event.stopPropagation()">'
+    + '<div class="gp-modal-head"><span class="gp-modal-title">📥 Export to Excel</span>'
+    + '<button class="gp-modal-close" onclick="gpCloseExportModal()">×</button></div>'
+    + '<div class="gp-modal-body">'
+    + '<div class="gp-modal-section"><div class="gp-modal-section-label">Include scenarios</div>' + scenarioChecks + '</div>'
+    + '<div class="gp-modal-section">'
+    + '<div class="gp-modal-section-label"><span>Products (' + allRows.length + ' total)</span>'
+    + '<span><button class="gp-modal-select-all" onclick="gpSelectAllProducts(true)">Select all</button>&nbsp;/&nbsp;<button class="gp-modal-select-all" onclick="gpSelectAllProducts(false)">None</button></span></div>'
+    + '<input class="gp-modal-search" id="gp-modal-search" placeholder="🔍 Filter products…" oninput="gpFilterModalList(this.value)">'
+    + '<div class="gp-product-list" id="gp-modal-product-list">' + productList + '</div>'
+    + '</div></div>'
+    + '<div class="gp-modal-footer">'
+    + '<button class="gp-cancel-btn" onclick="gpCloseExportModal()">Cancel</button>'
+    + '<button class="gp-confirm-btn" onclick="gpDoExport()">📥 Download Excel</button>'
+    + '</div></div>';
+  modal.addEventListener('click', gpCloseExportModal);
+  document.body.appendChild(modal);
+}
+
+function gpCloseExportModal() { const m = document.getElementById('gp-export-modal'); if (m) m.remove(); }
+function gpSelectAllProducts(v) { document.querySelectorAll('.gp-export-product-check').forEach(cb => cb.checked = v); }
+function gpFilterModalList(val) {
+  const list = document.getElementById('gp-modal-product-list');
+  if (!list) return;
+  list.querySelectorAll('.gp-product-check').forEach(row => {
+    const n = (row.querySelector('.gp-product-check-name')||{}).textContent||'';
+    const s = (row.querySelector('.gp-product-check-sku')||{}).textContent||'';
+    row.style.display = (!val||n.toLowerCase().includes(val.toLowerCase())||s.toLowerCase().includes(val.toLowerCase()))?'':'none';
   });
 }
 
-function gpSetAds(days) {
-  gpAdsDays = days;
-  render();
-}
-
-function gpExportExcel() {
-  // Build a multi-sheet workbook using SheetJS (available in the browser)
-  // We'll create a CSV-based download as fallback, or use a proper XLSX blob
-  const scenarios = [
-    { label: '125% Sales', multiplier: 1.25 },
-    { label: '150% Sales', multiplier: 1.50 },
-    { label: '200% Sales', multiplier: 2.00 },
-  ];
-
-  // Build rows for all 3 scenarios
-  const allRows = [];
-  allRows.push(['Growth Projection Report', '', '', '', '', '', '']);
-  allRows.push([`Generated: ${new Date().toLocaleDateString('en-GB')}`, `ADS Window: ${gpAdsDays}d`, '', '', '', '', '']);
-  allRows.push([]);
-
-  scenarios.forEach(sc => {
-    const rows = gpBuildProducts(sc.multiplier, gpAdsDays);
-    allRows.push([`Scenario: ${sc.label} (ADS × ${sc.multiplier})`, '', '', '', '', '', '']);
-    allRows.push(['Product Name', 'SKU', 'Current Inventory', `Base ADS (${gpAdsDays}d)`, `Projected ADS (×${sc.multiplier})`, 'Days of Stock', 'Remarks — Upcoming Deliveries']);
-    rows.forEach(r => {
-      const daysStr = isFinite(r.daysImmediate) ? Math.round(r.daysImmediate) : '∞';
-      const remarksFlat = r.remarks.replace(/\n/g, ' | ');
-      allRows.push([r.name, r.sku, r.stock, r.adsBase, r.adsScaled, daysStr, remarksFlat]);
-    });
-    allRows.push([]);
-  });
-
-  // Convert to CSV
-  const csv = allRows.map(row =>
-    row.map(cell => {
-      const s = String(cell ?? '').replace(/"/g, '""');
-      return s.includes(',') || s.includes('\n') || s.includes('"') ? `"${s}"` : s;
-    }).join(',')
-  ).join('\r\n');
-
-  // Try SheetJS for proper xlsx
+function gpDoExport() {
+  const scenarioIdxs = [...document.querySelectorAll('.gp-export-scenario-check:checked')].map(cb => +cb.value);
+  const selectedSkus = new Set([...document.querySelectorAll('.gp-export-product-check:checked')].map(cb => cb.value));
+  if (!scenarioIdxs.length) { alert('Please select at least one scenario.'); return; }
+  if (!selectedSkus.size)   { alert('Please select at least one product.');  return; }
+  gpCloseExportModal();
   try {
-    const XLSX = window.XLSX || (typeof require !== 'undefined' ? require('xlsx') : null);
-    if (XLSX) {
-      const wb = XLSX.utils.book_new();
-      scenarios.forEach(sc => {
-        const rows2 = gpBuildProducts(sc.multiplier, gpAdsDays);
-        const wsData = [
-          ['Product Name', 'SKU', 'Current Inventory', `Base ADS (${gpAdsDays}d)`, `Projected ADS (×${sc.multiplier})`, 'Days of Stock', 'Remarks'],
-          ...rows2.map(r => [r.name, r.sku, r.stock, r.adsBase, r.adsScaled,
-            isFinite(r.daysImmediate) ? Math.round(r.daysImmediate) : '∞',
-            r.remarks.replace(/\n/g, ' | ')])
-        ];
-        const ws = XLSX.utils.aoa_to_sheet(wsData);
-        // Column widths
-        ws['!cols'] = [{wch:35},{wch:20},{wch:18},{wch:16},{wch:18},{wch:14},{wch:70}];
-        XLSX.utils.book_append_sheet(wb, ws, sc.label);
-      });
-      XLSX.writeFile(wb, `Facelove_Growth_Projection_${gpAdsDays}d_${new Date().toISOString().slice(0,10)}.xlsx`);
-      return;
-    }
-  } catch(e) { /* fall through to CSV */ }
-
-  // Fallback: download as CSV
-  const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url; a.download = `Facelove_Growth_Projection_${gpAdsDays}d_${new Date().toISOString().slice(0,10)}.csv`;
-  document.body.appendChild(a); a.click();
-  document.body.removeChild(a); URL.revokeObjectURL(url);
+    const XLSX = window.XLSX; if (!XLSX) throw new Error('SheetJS not available');
+    const wb = XLSX.utils.book_new();
+    scenarioIdxs.forEach(i => {
+      const sc = GP_SCENARIOS[i];
+      const rows = gpBuildProducts(sc.multiplier, gpAdsDays).filter(r => selectedSkus.has(r.sku));
+      const wsData = [
+        ['Growth Projection — ' + sc.label, '', '', '', '', '', ''],
+        ['Generated: ' + new Date().toLocaleDateString('en-GB'), 'ADS Window: ' + gpAdsDays + 'd', 'Scenario: ADS × ' + sc.multiplier, '', '', '', ''],
+        [],
+        ['Product Name','SKU','Current Inventory','Base ADS ('+gpAdsDays+'d)','Projected ADS (×'+sc.multiplier+')','Days of Stock','Remarks — Upcoming Deliveries'],
+        ...rows.map(r => [r.name, r.sku, r.stock, r.adsBase, r.adsScaled,
+          isFinite(r.daysImmediate) ? Math.round(r.daysImmediate) : '∞',
+          r.remarks.split('\n').join(' | ')])
+      ];
+      const ws = XLSX.utils.aoa_to_sheet(wsData);
+      ws['!cols'] = [{wch:35},{wch:20},{wch:18},{wch:16},{wch:18},{wch:14},{wch:80}];
+      ws['!merges'] = [{s:{r:0,c:0},e:{r:0,c:6}}];
+      XLSX.utils.book_append_sheet(wb, ws, sc.label.substring(0,31));
+    });
+    XLSX.writeFile(wb, 'Facelove_Growth_Projection_' + gpAdsDays + 'd_' + new Date().toISOString().slice(0,10) + '.xlsx');
+  } catch(e) { console.error('Export error:', e); alert('Export failed: ' + e.message); }
 }
+
 
 function renderSales() {
   const has = state.sales.length > 0;
